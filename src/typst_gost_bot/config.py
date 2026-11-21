@@ -51,6 +51,7 @@ class Settings:
     repo_branch: str
     repo_db_subdir: str
     repo_assets_subdir: str
+    telegram_proxy: str | None
 
 
 def load_settings() -> Settings:
@@ -66,6 +67,8 @@ def load_settings() -> Settings:
 
     raw_font_path = os.getenv("TYPST_FONT_PATH", "").strip()
     font_path = Path(raw_font_path) if raw_font_path else None
+
+    telegram_proxy = os.getenv("TELEGRAM_PROXY", "").strip() or None
 
     return Settings(
         bot_token=bot_token,
@@ -98,6 +101,7 @@ def load_settings() -> Settings:
         repo_slug=os.getenv("DOCS_REPO_SLUG", "typst-gost/website").strip(),
         repo_branch=os.getenv("DOCS_REPO_BRANCH", "main").strip(),
         repo_db_subdir=os.getenv("DOCS_REPO_SUBDIR", "docs_vector_db").strip("/"),
+        telegram_proxy=telegram_proxy,
         repo_assets_subdir=os.getenv(
             "DOCS_REPO_ASSETS_SUBDIR",
             "public/docs/compile_assets",

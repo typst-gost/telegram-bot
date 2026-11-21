@@ -4,6 +4,7 @@ import asyncio
 
 from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
+from aiogram.client.session.aiohttp import AiohttpSession
 from loguru import logger
 
 from typst_gost_bot.config import load_settings
@@ -39,7 +40,8 @@ async def start_bot() -> None:
     history_store = ChatHistoryStore()
     draft_stop_registry = DraftStopRegistry()
 
-    bot = Bot(token=settings.bot_token)
+    session = AiohttpSession(proxy=settings.telegram_proxy) if settings.telegram_proxy else None
+    bot = Bot(token=settings.bot_token, session=session)
     dp = Dispatcher()
     dp["settings"] = settings
     dp["rag_service"] = rag_service
