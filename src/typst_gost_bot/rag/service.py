@@ -71,8 +71,13 @@ class RagService:
             f"{listed}"
         )
 
-    async def search_only(self, question: str, max_sources: int = 5) -> list[DocSource]:
-        embedding_query, fts_query = expand_query(question)
+    async def search_only(
+        self,
+        question: str,
+        max_sources: int = 5,
+        history: list[dict[str, str]] | None = None,
+    ) -> list[DocSource]:
+        embedding_query, fts_query = expand_query(question, history=history)
         emb_response = await self._client.embeddings.create(
             model=self._settings.embedding_model,
             input=[embedding_query],
@@ -85,8 +90,12 @@ class RagService:
             max_sources=max_sources,
         )
 
-    async def answer(self, question: str) -> RagAnswer:
-        sources = await self.search_only(question)
+    async def answer(
+        self,
+        question: str,
+        history: list[dict[str, str]] | None = None,
+    ) -> RagAnswer:
+        sources = await self.search_only(question, history=history)
         if not sources:
             return RagAnswer(
                 answer="В документации нет информации по этому вопросу.",
@@ -101,12 +110,17 @@ class RagService:
             assets_section=self._build_assets_section(),
             context=context_text,
         )
+
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": system_prompt},
+        ]
+        if history:
+            messages.extend(history)
+        messages.append({"role": "user", "content": question})
+
         completion = await self._client.chat.completions.create(
             model=self._settings.chat_model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": question},
-            ],
+            messages=messages,
             temperature=0.2,
         )
         content = (completion.choices[0].message.content or "").strip()

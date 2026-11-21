@@ -9,6 +9,7 @@ from loguru import logger
 
 from typst_gost_bot.config import Settings
 from typst_gost_bot.rag.service import RagService
+from typst_gost_bot.telegram.history import ChatHistoryStore
 from typst_gost_bot.telegram.rate_limit import CooldownLimiter
 from typst_gost_bot.telegram.sender import send_rag_reply, send_rich_markdown
 from typst_gost_bot.typst_runner.compiler import TypstCompiler
@@ -24,8 +25,8 @@ WELCOME_MD = """# Помощник по Typst и modern-g7-32
 
 ### Как пользоваться
 
-- **В личных сообщениях:** просто напишите свой вопрос обычным сообщением (команда `/help` не обязательна).
-- **В группах:** используйте команду `/help <ваш вопрос>`.
+- **В личных сообщениях:** пишите вопрос обычным сообщением. Бот помнит контекст предыдущих сообщений диалога.
+- **В группах:** используйте команду `/help <ваш вопрос>` (каждый вопрос обрабатывается независимо).
 - **Рендер кода:** отправьте блок кода `typst` или файл `.typ` в любой чат.
 
 **Примеры вопросов:**
@@ -48,6 +49,7 @@ async def _execute_rag_flow(
     compiler: TypstCompiler,
     settings: Settings,
     rate_limiter: CooldownLimiter,
+    history_store: ChatHistoryStore,
 ) -> None:
     if len(query) > MAX_QUERY_CHARS:
         await send_rich_markdown(
@@ -69,6 +71,9 @@ async def _execute_rag_flow(
         )
         return
 
+    is_private = message.chat.type == ChatType.PRIVATE
+    history = history_store.get_messages(message.chat.id) if is_private else None
+
     status_message = await message.answer(
         "Думаю...",
         reply_parameters=ReplyParameters(
@@ -84,7 +89,11 @@ async def _execute_rag_flow(
             chat_id=message.chat.id,
             message_thread_id=thread_id,
         ):
-            rag_answer = await rag_service.answer(query)
+            rag_answer = await rag_service.answer(query, history=history)
+            if is_private:
+                history_store.add_user_message(message.chat.id, query)
+                history_store.add_assistant_message(message.chat.id, rag_answer.answer)
+
             await send_rag_reply(
                 message,
                 rag_answer,
@@ -107,7 +116,12 @@ async def _execute_rag_flow(
 
 
 @router.message(CommandStart())
-async def handle_start(message: Message, settings: Settings) -> None:
+async def handle_start(
+    message: Message,
+    settings: Settings,
+    history_store: ChatHistoryStore,
+) -> None:
+    history_store.clear(message.chat.id)
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -135,6 +149,7 @@ async def handle_help(
     compiler: TypstCompiler,
     settings: Settings,
     rate_limiter: CooldownLimiter,
+    history_store: ChatHistoryStore,
 ) -> None:
     query = (command.args or "").strip()
     if not query:
@@ -153,6 +168,7 @@ async def handle_help(
         compiler=compiler,
         settings=settings,
         rate_limiter=rate_limiter,
+        history_store=history_store,
     )
 
 
@@ -168,6 +184,7 @@ async def handle_direct_pm_message(
     compiler: TypstCompiler,
     settings: Settings,
     rate_limiter: CooldownLimiter,
+    history_store: ChatHistoryStore,
 ) -> None:
     query = (message.text or "").strip()
     if not query:
@@ -180,4 +197,5 @@ async def handle_direct_pm_message(
         compiler=compiler,
         settings=settings,
         rate_limiter=rate_limiter,
+        history_store=history_store,
     )
