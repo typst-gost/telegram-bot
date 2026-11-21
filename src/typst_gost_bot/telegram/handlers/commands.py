@@ -3,7 +3,13 @@ from __future__ import annotations
 from aiogram import F, Router
 from aiogram.enums import ChatType
 from aiogram.filters import Command, CommandObject, CommandStart
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, ReplyParameters
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    MessageGenerationStopped,
+    ReplyParameters,
+)
 from aiogram.utils.chat_action import ChatActionSender
 from loguru import logger
 
@@ -11,7 +17,12 @@ from typst_gost_bot.config import Settings
 from typst_gost_bot.rag.service import RagService
 from typst_gost_bot.telegram.history import ChatHistoryStore
 from typst_gost_bot.telegram.rate_limit import CooldownLimiter
-from typst_gost_bot.telegram.sender import send_rag_reply, send_rich_markdown
+from typst_gost_bot.telegram.render_state import DraftStopRegistry
+from typst_gost_bot.telegram.sender import (
+    send_rag_reply,
+    send_rich_markdown,
+    stream_rag_reply,
+)
 from typst_gost_bot.typst_runner.compiler import TypstCompiler
 from typst_gost_bot.typst_runner.extractor import no_typst_blocks
 
@@ -25,7 +36,7 @@ WELCOME_MD = """# Помощник по Typst и modern-g7-32
 
 ### Как пользоваться
 
-- **В личных сообщениях:** пишите вопрос обычным сообщением. Бот помнит контекст предыдущих сообщений диалога.
+- **В личных сообщениях:** пишите вопрос обычным сообщением. Бот отвечает потоково и помнит контекст диалога.
 - **В группах:** используйте команду `/help <ваш вопрос>` (каждый вопрос обрабатывается независимо).
 - **Рендер кода:** отправьте блок кода `typst` или файл `.typ` в любой чат.
 
@@ -50,6 +61,7 @@ async def _execute_rag_flow(
     settings: Settings,
     rate_limiter: CooldownLimiter,
     history_store: ChatHistoryStore,
+    draft_stop_registry: DraftStopRegistry,
 ) -> None:
     if len(query) > MAX_QUERY_CHARS:
         await send_rich_markdown(
@@ -72,7 +84,30 @@ async def _execute_rag_flow(
         return
 
     is_private = message.chat.type == ChatType.PRIVATE
-    history = history_store.get_messages(message.chat.id) if is_private else None
+    if is_private:
+        history = history_store.get_messages(message.chat.id)
+        try:
+            rag_answer = await stream_rag_reply(
+                message,
+                query,
+                history=history,
+                rag_service=rag_service,
+                compiler=compiler,
+                settings=settings,
+                draft_stop_registry=draft_stop_registry,
+            )
+            if rag_answer is not None and rag_answer.answer:
+                history_store.add_user_message(message.chat.id, query)
+                history_store.add_assistant_message(message.chat.id, rag_answer.answer)
+        except Exception:
+            logger.exception(f"Failed to stream query in chat {message.chat.id}")
+            await send_rich_markdown(
+                message,
+                "Не удалось обработать запрос. Попробуйте повторить позже.",
+                render_mode="off",
+                reply_to_sender=True,
+            )
+        return
 
     status_message = await message.answer(
         "Думаю...",
@@ -89,11 +124,7 @@ async def _execute_rag_flow(
             chat_id=message.chat.id,
             message_thread_id=thread_id,
         ):
-            rag_answer = await rag_service.answer(query, history=history)
-            if is_private:
-                history_store.add_user_message(message.chat.id, query)
-                history_store.add_assistant_message(message.chat.id, rag_answer.answer)
-
+            rag_answer = await rag_service.answer(query)
             await send_rag_reply(
                 message,
                 rag_answer,
@@ -113,6 +144,14 @@ async def _execute_rag_flow(
             await status_message.delete()
         except Exception:
             pass
+
+
+@router.stopped_message_generation()
+async def handle_stopped_generation(
+    event: MessageGenerationStopped,
+    draft_stop_registry: DraftStopRegistry,
+) -> None:
+    draft_stop_registry.request_stop(event.chat.id, event.draft_id)
 
 
 @router.message(CommandStart())
@@ -150,6 +189,7 @@ async def handle_help(
     settings: Settings,
     rate_limiter: CooldownLimiter,
     history_store: ChatHistoryStore,
+    draft_stop_registry: DraftStopRegistry,
 ) -> None:
     query = (command.args or "").strip()
     if not query:
@@ -169,6 +209,7 @@ async def handle_help(
         settings=settings,
         rate_limiter=rate_limiter,
         history_store=history_store,
+        draft_stop_registry=draft_stop_registry,
     )
 
 
@@ -185,6 +226,7 @@ async def handle_direct_pm_message(
     settings: Settings,
     rate_limiter: CooldownLimiter,
     history_store: ChatHistoryStore,
+    draft_stop_registry: DraftStopRegistry,
 ) -> None:
     query = (message.text or "").strip()
     if not query:
@@ -198,4 +240,5 @@ async def handle_direct_pm_message(
         settings=settings,
         rate_limiter=rate_limiter,
         history_store=history_store,
+        draft_stop_registry=draft_stop_registry,
     )

@@ -119,3 +119,27 @@ def strip_code_fences(text: str) -> str:
     if match:
         return match.group(1).strip()
     return cleaned
+
+def close_open_fences(markdown_text: str) -> str:
+    fence_char = ""
+    fence_len = 0
+
+    for line in markdown_text.splitlines():
+        stripped = line.rstrip("\r\n")
+        if not fence_char:
+            match = FENCE_OPEN_RE.match(stripped)
+            if match:
+                marks, _ = match.groups()
+                fence_char = marks[0]
+                fence_len = len(marks)
+        else:
+            close_re = re.compile(rf"^[ \t]*{re.escape(fence_char)}{{{fence_len},}}[ \t]*$")
+            if close_re.match(stripped):
+                fence_char = ""
+                fence_len = 0
+
+    if not fence_char:
+        return markdown_text
+    closing = fence_char * fence_len
+    suffix = closing if markdown_text.endswith("\n") else f"\n{closing}"
+    return f"{markdown_text}{suffix}"

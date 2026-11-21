@@ -25,6 +25,7 @@ class Settings:
     max_source_chars: int
     max_render_attachments: int
     rate_limit_seconds: float
+    stream_update_interval: float
     log_level: str
     log_file: str
     repo_slug: str
@@ -64,6 +65,7 @@ def load_settings() -> Settings:
         max_source_chars=int(os.getenv("TYPST_MAX_SOURCE_CHARS", "50000")),
         max_render_attachments=int(os.getenv("MAX_RENDER_ATTACHMENTS", "10")),
         rate_limit_seconds=float(os.getenv("RATE_LIMIT_SECONDS", "3.0")),
+        stream_update_interval=float(os.getenv("STREAM_UPDATE_INTERVAL", "0.35")),
         log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
         log_file=os.getenv("LOG_FILE", "").strip(),
         repo_slug=os.getenv("DOCS_REPO_SLUG", "typst-gost/website").strip(),

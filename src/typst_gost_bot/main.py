@@ -12,7 +12,11 @@ from typst_gost_bot.rag import DocsRetriever, RagService
 from typst_gost_bot.telegram.handlers import root_router
 from typst_gost_bot.telegram.history import ChatHistoryStore
 from typst_gost_bot.telegram.rate_limit import CooldownLimiter
-from typst_gost_bot.telegram.render_state import EditTracker, FixSessionStore
+from typst_gost_bot.telegram.render_state import (
+    DraftStopRegistry,
+    EditTracker,
+    FixSessionStore,
+)
 from typst_gost_bot.typst_runner import TypstCompiler
 
 
@@ -30,6 +34,7 @@ async def start_bot() -> None:
     fix_store = FixSessionStore()
     edit_tracker = EditTracker()
     history_store = ChatHistoryStore()
+    draft_stop_registry = DraftStopRegistry()
 
     bot = Bot(token=settings.bot_token)
     dp = Dispatcher()
@@ -40,6 +45,7 @@ async def start_bot() -> None:
     dp["fix_store"] = fix_store
     dp["edit_tracker"] = edit_tracker
     dp["history_store"] = history_store
+    dp["draft_stop_registry"] = draft_stop_registry
     dp.include_router(root_router)
 
     await bot.set_my_commands(

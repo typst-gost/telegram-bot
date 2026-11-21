@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import html
+import time
 from dataclasses import dataclass
 from typing import Literal
 
@@ -17,15 +19,18 @@ from aiogram.types import (
 )
 from loguru import logger
 
-from typst_gost_bot.rag.models import RagAnswer
+from typst_gost_bot.config import Settings
+from typst_gost_bot.rag.models import DocSource, RagAnswer
+from typst_gost_bot.rag.service import RagService
 from typst_gost_bot.telegram.formatters import (
     inject_source_links,
     to_fallback_entities,
     to_rich_messages,
 )
 from typst_gost_bot.telegram.keyboards import build_sources_keyboard
+from typst_gost_bot.telegram.render_state import DraftStopRegistry
 from typst_gost_bot.typst_runner.compiler import TypstCompiler
-from typst_gost_bot.typst_runner.extractor import find_typst_fences
+from typst_gost_bot.typst_runner.extractor import close_open_fences, find_typst_fences
 
 RenderMode = Literal["off", "attach_valid", "strict"]
 
@@ -317,6 +322,180 @@ async def send_rag_reply(
         reply_markup=keyboard,
         reply_to_sender=True,
     )
+
+
+async def _push_rich_draft(
+    bot: Bot,
+    *,
+    chat_id: int,
+    draft_id: int,
+    thread_id: int | None,
+    rich_message: InputRichMessage,
+    can_stop: bool = True,
+) -> bool:
+    try:
+        await bot.send_rich_message_draft(
+            chat_id=chat_id,
+            draft_id=draft_id,
+            message_thread_id=thread_id,
+            rich_message=rich_message,
+            can_stop=can_stop,
+            keep_on_stop=True,
+        )
+        return True
+    except TelegramBadRequest as exc:
+        logger.warning(f"sendRichMessageDraft failed: {exc}")
+        return False
+
+
+def _build_draft_preview(
+    raw_markdown: str,
+    sources: list[DocSource],
+    *,
+    thinking_status: str | None = None,
+) -> InputRichMessage:
+    closed_md = close_open_fences(raw_markdown)
+    linked_md = inject_source_links(closed_md, sources)
+    rich_msg = to_rich_messages(linked_md)[-1]
+    if thinking_status:
+        status_html = f"<tg-thinking>{html.escape(thinking_status)}</tg-thinking>"
+        if rich_msg.html:
+            return InputRichMessage(html=f"{rich_msg.html}{status_html}")
+        return InputRichMessage(html=status_html)
+    return rich_msg
+
+
+async def stream_rag_reply(
+    message: Message,
+    query: str,
+    *,
+    history: list[dict[str, str]] | None,
+    rag_service: RagService,
+    compiler: TypstCompiler,
+    settings: Settings,
+    draft_stop_registry: DraftStopRegistry,
+) -> RagAnswer | None:
+    chat_id = message.chat.id
+    thread_id = message.message_thread_id if message.is_topic_message else None
+    draft_id, stop_event = draft_stop_registry.create(chat_id)
+
+    drafts_enabled = await _push_rich_draft(
+        message.bot,
+        chat_id=chat_id,
+        draft_id=draft_id,
+        thread_id=thread_id,
+        rich_message=InputRichMessage(html="<tg-thinking>Ищу в документации...</tg-thinking>"),
+    )
+
+    sources: list[DocSource] = []
+    accumulated_parts: list[str] = []
+    last_push_time = time.monotonic()
+    last_pushed_len = 0
+    stopped_by_user = False
+
+    try:
+        async for event in rag_service.stream_answer(query, history=history):
+            if stop_event.is_set():
+                stopped_by_user = True
+                break
+
+            if event.kind == "sources":
+                sources = event.sources
+                if sources and drafts_enabled:
+                    drafts_enabled = await _push_rich_draft(
+                        message.bot,
+                        chat_id=chat_id,
+                        draft_id=draft_id,
+                        thread_id=thread_id,
+                        rich_message=InputRichMessage(
+                            html="<tg-thinking>Формулирую ответ...</tg-thinking>"
+                        ),
+                    )
+                    last_push_time = time.monotonic()
+                continue
+
+            if event.kind == "delta":
+                accumulated_parts.append(event.text)
+                if not drafts_enabled:
+                    continue
+
+                now = time.monotonic()
+                current_text = "".join(accumulated_parts)
+                chars_delta = len(current_text) - last_pushed_len
+                elapsed = now - last_push_time
+
+                if (elapsed >= settings.stream_update_interval and chars_delta >= 12) or (
+                    elapsed >= 18.0
+                ):
+                    preview = _build_draft_preview(current_text, sources)
+                    drafts_enabled = await _push_rich_draft(
+                        message.bot,
+                        chat_id=chat_id,
+                        draft_id=draft_id,
+                        thread_id=thread_id,
+                        rich_message=preview,
+                    )
+                    last_push_time = now
+                    last_pushed_len = len(current_text)
+
+                if stop_event.is_set():
+                    stopped_by_user = True
+                    break
+
+            elif event.kind == "done":
+                if not accumulated_parts and event.text:
+                    accumulated_parts.append(event.text)
+
+        raw_answer = "".join(accumulated_parts).strip()
+
+        if stopped_by_user:
+            if not raw_answer:
+                await send_rich_markdown(
+                    message,
+                    "Генерация остановлена.",
+                    render_mode="off",
+                    reply_to_sender=True,
+                )
+                return None
+
+            final_text = f"{close_open_fences(raw_answer)}\n\n> *Генерация остановлена.*"
+            rag_answer = RagAnswer(answer=final_text, sources=sources)
+            await send_rag_reply(
+                message,
+                rag_answer,
+                compiler=compiler,
+                max_attachments=settings.max_render_attachments,
+            )
+            return RagAnswer(answer=close_open_fences(raw_answer), sources=sources)
+
+        if not raw_answer:
+            raw_answer = "Не удалось сформировать ответ по найденной документации."
+
+        if drafts_enabled:
+            thinking = "Рендерю примеры кода..." if find_typst_fences(raw_answer) else None
+            await _push_rich_draft(
+                message.bot,
+                chat_id=chat_id,
+                draft_id=draft_id,
+                thread_id=thread_id,
+                rich_message=_build_draft_preview(
+                    raw_answer,
+                    sources,
+                    thinking_status=thinking,
+                ),
+                can_stop=False,
+            )
+
+        rag_answer = RagAnswer(answer=raw_answer, sources=sources)
+        await send_rag_reply(
+            message,
+            rag_answer,
+            compiler=compiler,
+            max_attachments=settings.max_render_attachments,
+        )
+        return rag_answer
+    finally:
+        draft_stop_registry.release(chat_id, draft_id)
 
 
 async def delete_messages_safe(

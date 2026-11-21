@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+
 from openai import AsyncOpenAI
 
 from typst_gost_bot.config import Settings
-from typst_gost_bot.rag.models import DocSource, RagAnswer
+from typst_gost_bot.rag.models import DocSource, RagAnswer, RagStreamEvent
 from typst_gost_bot.rag.query_builder import expand_query
 from typst_gost_bot.rag.retriever import DocsRetriever
 from typst_gost_bot.typst_runner.assets import list_compile_assets
@@ -71,6 +73,28 @@ class RagService:
             f"{listed}"
         )
 
+    def _build_chat_messages(
+        self,
+        question: str,
+        sources: list[DocSource],
+        history: list[dict[str, str]] | None,
+    ) -> list[dict[str, str]]:
+        context_text = "\n---\n".join(
+            f"[Источник {src.label}] ({src.title}):\n{src.content}"
+            for src in sources
+        )
+        system_prompt = SYSTEM_PROMPT.format(
+            assets_section=self._build_assets_section(),
+            context=context_text,
+        )
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": system_prompt},
+        ]
+        if history:
+            messages.extend(history)
+        messages.append({"role": "user", "content": question})
+        return messages
+
     async def search_only(
         self,
         question: str,
@@ -102,22 +126,7 @@ class RagService:
                 sources=[],
             )
 
-        context_text = "\n---\n".join(
-            f"[Источник {src.label}] ({src.title}):\n{src.content}"
-            for src in sources
-        )
-        system_prompt = SYSTEM_PROMPT.format(
-            assets_section=self._build_assets_section(),
-            context=context_text,
-        )
-
-        messages: list[dict[str, str]] = [
-            {"role": "system", "content": system_prompt},
-        ]
-        if history:
-            messages.extend(history)
-        messages.append({"role": "user", "content": question})
-
+        messages = self._build_chat_messages(question, sources, history)
         completion = await self._client.chat.completions.create(
             model=self._settings.chat_model,
             messages=messages,
@@ -127,6 +136,47 @@ class RagService:
         if not content:
             content = "Не удалось сформировать ответ по найденной документации."
         return RagAnswer(answer=content, sources=sources)
+
+    async def stream_answer(
+        self,
+        question: str,
+        history: list[dict[str, str]] | None = None,
+    ) -> AsyncIterator[RagStreamEvent]:
+        sources = await self.search_only(question, history=history)
+        yield RagStreamEvent(kind="sources", sources=sources)
+
+        if not sources:
+            yield RagStreamEvent(
+                kind="done",
+                sources=[],
+                text="В документации нет информации по этому вопросу.",
+            )
+            return
+
+        messages = self._build_chat_messages(question, sources, history)
+        stream = await self._client.chat.completions.create(
+            model=self._settings.chat_model,
+            messages=messages,
+            temperature=0.2,
+            stream=True,
+        )
+
+        parts: list[str] = []
+        try:
+            async for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    parts.append(delta)
+                    yield RagStreamEvent(kind="delta", sources=sources, text=delta)
+        finally:
+            await stream.close()
+
+        full_text = "".join(parts).strip()
+        if not full_text:
+            full_text = "Не удалось сформировать ответ по найденной документации."
+        yield RagStreamEvent(kind="done", sources=sources, text=full_text)
 
     async def fix_code(self, source_code: str, error_text: str) -> str:
         retrieval_query = f"ошибка typst {error_text[:300]}\n{source_code[:400]}"

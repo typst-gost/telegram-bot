@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import random
 import time
 import uuid
 from dataclasses import dataclass
@@ -86,3 +88,31 @@ class EditTracker:
 
     def pop(self, chat_id: int, user_message_id: int) -> TrackedReply | None:
         return self._replies.pop((chat_id, user_message_id), None)
+
+
+class DraftStopRegistry:
+    def __init__(self) -> None:
+        self._events: dict[tuple[int, int], asyncio.Event] = {}
+
+    def create(self, chat_id: int) -> tuple[int, asyncio.Event]:
+        for _ in range(8):
+            draft_id = random.randint(1, 2_147_483_647)
+            if (chat_id, draft_id) not in self._events:
+                event = asyncio.Event()
+                self._events[(chat_id, draft_id)] = event
+                return draft_id, event
+
+        draft_id = int(time.monotonic_ns() % 2_147_483_646) + 1
+        event = asyncio.Event()
+        self._events[(chat_id, draft_id)] = event
+        return draft_id, event
+
+    def request_stop(self, chat_id: int, draft_id: int) -> bool:
+        event = self._events.get((chat_id, draft_id))
+        if event is None:
+            return False
+        event.set()
+        return True
+
+    def release(self, chat_id: int, draft_id: int) -> None:
+        self._events.pop((chat_id, draft_id), None)

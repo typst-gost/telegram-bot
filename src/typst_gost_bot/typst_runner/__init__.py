@@ -2,6 +2,7 @@ from typst_gost_bot.typst_runner.assets import list_compile_assets
 from typst_gost_bot.typst_runner.compiler import TypstCompiler
 from typst_gost_bot.typst_runner.extractor import (
     TypstFenceSpan,
+    close_open_fences,
     extract_typst_blocks_from_message,
     find_typst_fences,
     has_typst_blocks,
@@ -14,6 +15,7 @@ __all__ = [
     "CompileResult",
     "TypstCompiler",
     "TypstFenceSpan",
+    "close_open_fences",
     "extract_typst_blocks_from_message",
     "find_typst_fences",
     "has_typst_blocks",
