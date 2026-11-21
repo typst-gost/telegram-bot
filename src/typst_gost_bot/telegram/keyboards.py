@@ -25,3 +25,16 @@ def build_sources_keyboard(sources: list[DocSource]) -> InlineKeyboardMarkup | N
         for src in sources
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def build_fix_keyboard(fix_token: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Исправить",
+                    callback_data=f"fix:{fix_token}",
+                )
+            ]
+        ]
+    )

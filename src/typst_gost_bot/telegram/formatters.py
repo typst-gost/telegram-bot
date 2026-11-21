@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import re
 
-from aiogram.types import InputRichMessage, MessageEntity
+from aiogram.types import (
+    BufferedInputFile,
+    InputMediaPhoto,
+    InputRichMessage,
+    InputRichMessageMedia,
+    MessageEntity,
+)
 from loguru import logger
 from telegramify_markdown import convert, split_entities, telegramify_rich
 
@@ -57,15 +63,64 @@ def _model_to_dict(item: object) -> dict[str, object]:
     raise TypeError(f"Unsupported object type: {type(item)!r}")
 
 
-def to_rich_messages(markdown_text: str) -> list[InputRichMessage]:
+def _build_slot_html(media_ids: list[str]) -> str:
+    if len(media_ids) == 1:
+        return f'<figure><img src="tg://photo?id={media_ids[0]}"/></figure>'
+    images = "".join(f'<img src="tg://photo?id={mid}"/>' for mid in media_ids)
+    return f"<tg-collage>{images}</tg-collage>"
+
+
+def to_rich_messages(
+    markdown_text: str,
+    slot_images: dict[str, list[bytes]] | None = None,
+) -> list[InputRichMessage]:
     try:
-        chunks = telegramify_rich(markdown_text, mode="html")
-        if chunks:
-            return [InputRichMessage.model_validate(_model_to_dict(chunk)) for chunk in chunks]
+        raw_chunks = telegramify_rich(markdown_text, mode="html")
+        payloads = [_model_to_dict(chunk) for chunk in raw_chunks] if raw_chunks else []
     except Exception as exc:
         logger.warning(f"telegramify_rich failed, falling back to native markdown: {exc}")
+        payloads = []
 
-    return [InputRichMessage(markdown=markdown_text[:32000])]
+    if not payloads:
+        return [InputRichMessage(markdown=markdown_text[:32000])]
+
+    if not slot_images:
+        return [InputRichMessage.model_validate(payload) for payload in payloads]
+
+    result: list[InputRichMessage] = []
+    for chunk_idx, payload in enumerate(payloads):
+        html = str(payload.get("html") or "")
+        media_items: list[InputRichMessageMedia] = []
+
+        for slot_token, png_pages in slot_images.items():
+            if slot_token not in html or not png_pages:
+                continue
+
+            media_ids: list[str] = []
+            for page_idx, png_bytes in enumerate(png_pages):
+                media_id = f"r_{chunk_idx}_{len(media_items)}_{page_idx}"
+                media_ids.append(media_id)
+                media_items.append(
+                    InputRichMessageMedia(
+                        id=media_id,
+                        media=InputMediaPhoto(
+                            media=BufferedInputFile(
+                                png_bytes,
+                                filename=f"{media_id}.png",
+                            )
+                        ),
+                    )
+                )
+
+            slot_re = re.compile(rf"(?:<p>\s*)?{re.escape(slot_token)}(?:\s*</p>)?")
+            html = slot_re.sub(_build_slot_html(media_ids), html)
+
+        payload["html"] = html
+        if media_items:
+            payload["media"] = media_items
+        result.append(InputRichMessage.model_validate(payload))
+
+    return result
 
 
 def to_fallback_entities(markdown_text: str) -> list[tuple[str, list[MessageEntity]]]:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from aiogram import Router
+from aiogram import F, Router
+from aiogram.enums import ChatType
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, ReplyParameters
 from aiogram.utils.chat_action import ChatActionSender
@@ -10,6 +11,8 @@ from typst_gost_bot.config import Settings
 from typst_gost_bot.rag.service import RagService
 from typst_gost_bot.telegram.rate_limit import CooldownLimiter
 from typst_gost_bot.telegram.sender import send_rag_reply, send_rich_markdown
+from typst_gost_bot.typst_runner.compiler import TypstCompiler
+from typst_gost_bot.typst_runner.extractor import no_typst_blocks
 
 router = Router(name="commands")
 
@@ -17,18 +20,18 @@ MAX_QUERY_CHARS = 1500
 
 WELCOME_MD = """# Помощник по Typst и modern-g7-32
 
-Отвечаю на вопросы по языку **Typst** и оформлению документов по **ГОСТ 7.32-2017** (пакет `modern-g7-32`) на основе официальной документации.
+Отвечаю на вопросы по языку **Typst** и оформлению документов по **ГОСТ 7.32-2017** (пакет `modern-g7-32`), а также компилирую код Typst в изображения.
 
 ### Как пользоваться
 
-Используйте команду:
-`/help <ваш вопрос>`
+- **В личных сообщениях:** просто напишите свой вопрос обычным сообщением (команда `/help` не обязательна).
+- **В группах:** используйте команду `/help <ваш вопрос>`.
+- **Рендер кода:** отправьте блок кода `typst` или файл `.typ` в любой чат.
 
-**Примеры:**
-- `/help какие параметры есть у реферата`
-- `/help как скрыть стандартный титульный лист`
-- `/help как указать соисполнителя из другой организации`
-- `/help как сделать кириллическую нумерацию перечислений`"""
+**Примеры вопросов:**
+- `какие параметры есть у реферата`
+- `как скрыть стандартный титульный лист`
+- `как сделать кириллическую нумерацию перечислений`"""
 
 HELP_USAGE_MD = """Укажите вопрос после команды `/help`.
 
@@ -38,42 +41,19 @@ HELP_USAGE_MD = """Укажите вопрос после команды `/help`
 - `/help как экспортировать документ в word docx`"""
 
 
-@router.message(CommandStart())
-async def handle_start(message: Message, settings: Settings) -> None:
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="Открыть документацию",
-                    url=settings.docs_base_url,
-                )
-            ]
-        ]
-    )
-    await send_rich_markdown(
-        message,
-        WELCOME_MD,
-        reply_markup=keyboard,
-        reply_to_sender=False,
-    )
-
-
-@router.message(Command("help"))
-async def handle_help(
+async def _execute_rag_flow(
     message: Message,
-    command: CommandObject,
+    query: str,
     rag_service: RagService,
+    compiler: TypstCompiler,
+    settings: Settings,
     rate_limiter: CooldownLimiter,
 ) -> None:
-    query = (command.args or "").strip()
-    if not query:
-        await send_rich_markdown(message, HELP_USAGE_MD, reply_to_sender=True)
-        return
-
     if len(query) > MAX_QUERY_CHARS:
         await send_rich_markdown(
             message,
             f"Запрос слишком длинный. Максимум — {MAX_QUERY_CHARS} символов.",
+            render_mode="off",
             reply_to_sender=True,
         )
         return
@@ -84,6 +64,7 @@ async def handle_help(
         await send_rich_markdown(
             message,
             f"Подождите {wait_seconds:.1f} с перед следующим запросом.",
+            render_mode="off",
             reply_to_sender=True,
         )
         return
@@ -104,23 +85,99 @@ async def handle_help(
             message_thread_id=thread_id,
         ):
             rag_answer = await rag_service.answer(query)
+            await send_rag_reply(
+                message,
+                rag_answer,
+                compiler=compiler,
+                max_attachments=settings.max_render_attachments,
+            )
     except Exception:
-        logger.exception(f"Failed to process /help query in chat {message.chat.id}")
+        logger.exception(f"Failed to process query in chat {message.chat.id}")
+        await send_rich_markdown(
+            message,
+            "Не удалось обработать запрос. Попробуйте повторить позже.",
+            render_mode="off",
+            reply_to_sender=True,
+        )
+    finally:
         try:
             await status_message.delete()
         except Exception:
             pass
 
+
+@router.message(CommandStart())
+async def handle_start(message: Message, settings: Settings) -> None:
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Открыть документацию",
+                    url=settings.docs_base_url,
+                )
+            ]
+        ]
+    )
+    await send_rich_markdown(
+        message,
+        WELCOME_MD,
+        render_mode="off",
+        reply_markup=keyboard,
+        reply_to_sender=False,
+    )
+
+
+@router.message(Command("help"))
+async def handle_help(
+    message: Message,
+    command: CommandObject,
+    rag_service: RagService,
+    compiler: TypstCompiler,
+    settings: Settings,
+    rate_limiter: CooldownLimiter,
+) -> None:
+    query = (command.args or "").strip()
+    if not query:
         await send_rich_markdown(
             message,
-            "Не удалось обработать запрос. Попробуйте повторить позже.",
+            HELP_USAGE_MD,
+            render_mode="off",
             reply_to_sender=True,
         )
         return
 
-    try:
-        await status_message.delete()
-    except Exception:
-        pass
+    await _execute_rag_flow(
+        message=message,
+        query=query,
+        rag_service=rag_service,
+        compiler=compiler,
+        settings=settings,
+        rate_limiter=rate_limiter,
+    )
 
-    await send_rag_reply(message, rag_answer)
+
+@router.message(
+    F.chat.type == ChatType.PRIVATE,
+    F.text,
+    ~F.text.startswith("/"),
+    no_typst_blocks,
+)
+async def handle_direct_pm_message(
+    message: Message,
+    rag_service: RagService,
+    compiler: TypstCompiler,
+    settings: Settings,
+    rate_limiter: CooldownLimiter,
+) -> None:
+    query = (message.text or "").strip()
+    if not query:
+        return
+
+    await _execute_rag_flow(
+        message=message,
+        query=query,
+        rag_service=rag_service,
+        compiler=compiler,
+        settings=settings,
+        rate_limiter=rate_limiter,
+    )

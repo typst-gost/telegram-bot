@@ -11,6 +11,8 @@ from typst_gost_bot.logging_setup import setup_logging
 from typst_gost_bot.rag import DocsRetriever, RagService
 from typst_gost_bot.telegram.handlers import root_router
 from typst_gost_bot.telegram.rate_limit import CooldownLimiter
+from typst_gost_bot.telegram.render_state import EditTracker, FixSessionStore
+from typst_gost_bot.typst_runner import TypstCompiler
 
 
 async def start_bot() -> None:
@@ -22,13 +24,19 @@ async def start_bot() -> None:
         docs_base_url=settings.docs_base_url,
     )
     rag_service = RagService(settings=settings, retriever=retriever)
+    compiler = TypstCompiler(settings=settings)
     rate_limiter = CooldownLimiter(settings.rate_limit_seconds)
+    fix_store = FixSessionStore()
+    edit_tracker = EditTracker()
 
     bot = Bot(token=settings.bot_token)
     dp = Dispatcher()
     dp["settings"] = settings
     dp["rag_service"] = rag_service
+    dp["compiler"] = compiler
     dp["rate_limiter"] = rate_limiter
+    dp["fix_store"] = fix_store
+    dp["edit_tracker"] = edit_tracker
     dp.include_router(root_router)
 
     await bot.set_my_commands(
@@ -39,7 +47,9 @@ async def start_bot() -> None:
     )
 
     me = await bot.get_me()
-    logger.info(f"Starting bot @{me.username} (db: {settings.db_path})")
+    logger.info(
+        f"Starting bot @{me.username} (db: {settings.db_path}, assets: {settings.assets_dir})"
+    )
 
     try:
         await dp.start_polling(

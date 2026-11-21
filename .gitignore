@@ -2,6 +2,9 @@
 .env
 docs_vector_db/
 .docs_vector_db.*/
+compile_assets/
+.compile_assets.*/
+.typst_cache/
 logs/
 __pycache__/
 *.pyc
