@@ -1,0 +1,8 @@
+.venv/
+.env
+docs_vector_db/
+.docs_vector_db.*/
+logs/
+__pycache__/
+*.pyc
+.ruff_cache/

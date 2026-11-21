@@ -1,0 +1,29 @@
+[project]
+name = "typst-gost-bot"
+version = "0.1.0"
+description = "Telegram RAG bot for Typst and modern-g7-32 (GOST 7.32-2017)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "aiogram>=3.32.0",
+    "lancedb>=0.41.0",
+    "loguru>=0.7.3",
+    "openai>=3.49.0",
+    "python-dotenv>=1.2.0",
+    "telegramify-markdown>=1.4.0",
+]
+
+[project.scripts]
+typst-gost-bot = "typst_gost_bot.main:run"
+sync-docs-db = "typst_gost_bot.scripts.sync_db:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/typst_gost_bot"]
+
+[tool.ruff]
+line-length = 99
+target-version = "py312"
