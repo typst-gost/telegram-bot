@@ -11,6 +11,7 @@ from aiogram.utils.chat_action import ChatActionSender
 from loguru import logger
 
 from typst_gost_bot.config import Settings
+from typst_gost_bot.rag.guard import FIX_OFF_TOPIC_REPLY, TopicGuard
 from typst_gost_bot.rag.service import RagService
 from typst_gost_bot.telegram.formatters import to_rich_messages
 from typst_gost_bot.telegram.keyboards import build_fix_keyboard
@@ -363,6 +364,7 @@ async def handle_edited_typst_message(
 async def handle_fix_callback(
     callback: CallbackQuery,
     rag_service: RagService,
+    topic_guard: TopicGuard,
     compiler: TypstCompiler,
     settings: Settings,
     fix_store: FixSessionStore,
@@ -385,7 +387,7 @@ async def handle_fix_callback(
         )
         return
 
-    await callback.answer("Исправляю код...")
+    await callback.answer("Проверяю и исправляю код...")
     fix_store.delete(token)
 
     if callback.message is not None:
@@ -396,6 +398,21 @@ async def handle_fix_callback(
 
     target_message = callback.message
     if target_message is None:
+        return
+
+    verdict = await topic_guard.check_code_fix(payload.source_code, payload.error_text)
+    debug_footer = verdict.format_debug_blockquote() if settings.guard_debug else None
+
+    if not verdict.allowed:
+        refusal_md = (
+            f"{FIX_OFF_TOPIC_REPLY}\n\n{debug_footer}" if debug_footer else FIX_OFF_TOPIC_REPLY
+        )
+        await send_rich_markdown(
+            target_message,
+            refusal_md,
+            render_mode="off",
+            reply_to_sender=True,
+        )
         return
 
     thread_id = target_message.message_thread_id if target_message.is_topic_message else None
@@ -410,6 +427,8 @@ async def handle_fix_callback(
                 payload.error_text,
             )
             fixed_markdown = f"```typst\n{fixed_code}\n```"
+            if debug_footer:
+                fixed_markdown = f"{fixed_markdown}\n\n{debug_footer}"
             await send_rich_markdown(
                 target_message,
                 fixed_markdown,

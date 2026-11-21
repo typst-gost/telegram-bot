@@ -310,8 +310,11 @@ async def send_rag_reply(
     *,
     compiler: TypstCompiler,
     max_attachments: int,
+    debug_footer: str | None = None,
 ) -> SentMessageResult:
     linked_markdown = inject_source_links(rag_answer.answer, rag_answer.sources)
+    if debug_footer:
+        linked_markdown = f"{linked_markdown}\n\n{debug_footer}"
     keyboard = build_sources_keyboard(rag_answer.sources)
     return await send_rich_markdown(
         message,
@@ -374,6 +377,7 @@ async def stream_rag_reply(
     compiler: TypstCompiler,
     settings: Settings,
     draft_stop_registry: DraftStopRegistry,
+    debug_footer: str | None = None,
 ) -> RagAnswer | None:
     chat_id = message.chat.id
     thread_id = message.message_thread_id if message.is_topic_message else None
@@ -450,9 +454,14 @@ async def stream_rag_reply(
 
         if stopped_by_user:
             if not raw_answer:
+                stopped_md = (
+                    f"Генерация остановлена.\n\n{debug_footer}"
+                    if debug_footer
+                    else "Генерация остановлена."
+                )
                 await send_rich_markdown(
                     message,
-                    "Генерация остановлена.",
+                    stopped_md,
                     render_mode="off",
                     reply_to_sender=True,
                 )
@@ -465,6 +474,7 @@ async def stream_rag_reply(
                 rag_answer,
                 compiler=compiler,
                 max_attachments=settings.max_render_attachments,
+                debug_footer=debug_footer,
             )
             return RagAnswer(answer=close_open_fences(raw_answer), sources=sources)
 
@@ -492,6 +502,7 @@ async def stream_rag_reply(
             rag_answer,
             compiler=compiler,
             max_attachments=settings.max_render_attachments,
+            debug_footer=debug_footer,
         )
         return rag_answer
     finally:

@@ -8,7 +8,7 @@ from loguru import logger
 
 from typst_gost_bot.config import load_settings
 from typst_gost_bot.logging_setup import setup_logging
-from typst_gost_bot.rag import DocsRetriever, RagService
+from typst_gost_bot.rag import DocsRetriever, RagService, TopicGuard
 from typst_gost_bot.telegram.handlers import root_router
 from typst_gost_bot.telegram.history import ChatHistoryStore
 from typst_gost_bot.telegram.rate_limit import CooldownLimiter
@@ -29,6 +29,7 @@ async def start_bot() -> None:
         docs_base_url=settings.docs_base_url,
     )
     rag_service = RagService(settings=settings, retriever=retriever)
+    topic_guard = TopicGuard(settings=settings)
     compiler = TypstCompiler(settings=settings)
     rate_limiter = CooldownLimiter(settings.rate_limit_seconds)
     fix_store = FixSessionStore()
@@ -40,6 +41,7 @@ async def start_bot() -> None:
     dp = Dispatcher()
     dp["settings"] = settings
     dp["rag_service"] = rag_service
+    dp["topic_guard"] = topic_guard
     dp["compiler"] = compiler
     dp["rate_limiter"] = rate_limiter
     dp["fix_store"] = fix_store
@@ -57,7 +59,9 @@ async def start_bot() -> None:
 
     me = await bot.get_me()
     logger.info(
-        f"Starting bot @{me.username} (db: {settings.db_path}, assets: {settings.assets_dir})"
+        f"Starting bot @{me.username} "
+        f"(db: {settings.db_path}, assets: {settings.assets_dir}, "
+        f"guard: {settings.guard_enabled} [{settings.guard_model}], debug: {settings.guard_debug})"
     )
 
     try:
@@ -66,6 +70,7 @@ async def start_bot() -> None:
             allowed_updates=dp.resolve_used_update_types(),
         )
     finally:
+        await topic_guard.close()
         await rag_service.close()
         await bot.session.close()
 

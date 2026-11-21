@@ -7,6 +7,17 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 
+def _parse_bool(value: str | None, *, default: bool) -> bool:
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     bot_token: str
@@ -14,6 +25,12 @@ class Settings:
     polza_base_url: str
     embedding_model: str
     chat_model: str
+    guard_enabled: bool
+    guard_model: str
+    guard_offtopic_threshold: float
+    guard_noul_threshold: float
+    guard_timeout_seconds: float
+    guard_debug: bool
     db_path: Path
     docs_base_url: str
     assets_dir: Path
@@ -54,6 +71,12 @@ def load_settings() -> Settings:
         polza_base_url=os.getenv("POLZA_BASE_URL", "https://polza.ai/api/v1").rstrip("/"),
         embedding_model=os.getenv("RAG_EMBEDDING_MODEL", "qwen/qwen3-embedding-8b"),
         chat_model=os.getenv("RAG_CHAT_MODEL", "deepseek/deepseek-v4.1-flash-1017"),
+        guard_enabled=_parse_bool(os.getenv("RAG_GUARD_ENABLED"), default=True),
+        guard_model=os.getenv("RAG_GUARD_MODEL", "google/gemini-decision-1").strip(),
+        guard_offtopic_threshold=float(os.getenv("RAG_GUARD_OFFTOPIC_THRESHOLD", "0.85")),
+        guard_noul_threshold=float(os.getenv("RAG_GUARD_NOUL_THRESHOLD", "0.80")),
+        guard_timeout_seconds=float(os.getenv("RAG_GUARD_TIMEOUT", "3.0")),
+        guard_debug=_parse_bool(os.getenv("RAG_GUARD_DEBUG"), default=False),
         db_path=Path(os.getenv("DOCS_DB_PATH", "docs_vector_db")),
         docs_base_url=os.getenv("DOCS_BASE_URL", "https://typst-gost.ru").rstrip("/"),
         assets_dir=Path(os.getenv("COMPILE_ASSETS_DIR", "compile_assets")),
