@@ -14,7 +14,11 @@ from aiogram.utils.chat_action import ChatActionSender
 from loguru import logger
 
 from typst_gost_bot.config import Settings
-from typst_gost_bot.rag.guard import OFF_TOPIC_REPLY, TopicGuard
+from typst_gost_bot.rag.guard import (
+    OFF_TOPIC_REPLY,
+    TopicGuard,
+    format_guard_rag_debug,
+)
 from typst_gost_bot.rag.service import RagService
 from typst_gost_bot.telegram.history import ChatHistoryStore
 from typst_gost_bot.telegram.rate_limit import CooldownLimiter
@@ -89,12 +93,12 @@ async def _execute_rag_flow(
     history = history_store.get_messages(message.chat.id) if is_private else None
 
     verdict = await topic_guard.check(query, history=history)
-    debug_footer = verdict.format_debug_blockquote() if settings.guard_debug else None
+    debug_verdict = verdict if settings.guard_debug else None
 
     if not verdict.allowed:
-        refusal_md = (
-            f"{OFF_TOPIC_REPLY}\n\n{debug_footer}" if debug_footer else OFF_TOPIC_REPLY
-        )
+        refusal_md = OFF_TOPIC_REPLY
+        if debug_verdict is not None:
+            refusal_md = f"{refusal_md}\n\n{format_guard_rag_debug(debug_verdict)}"
         await send_rich_markdown(
             message,
             refusal_md,
@@ -113,7 +117,7 @@ async def _execute_rag_flow(
                 compiler=compiler,
                 settings=settings,
                 draft_stop_registry=draft_stop_registry,
-                debug_footer=debug_footer,
+                guard_verdict=debug_verdict,
             )
             if rag_answer is not None and rag_answer.answer:
                 history_store.add_user_message(message.chat.id, query)
@@ -149,7 +153,7 @@ async def _execute_rag_flow(
                 rag_answer,
                 compiler=compiler,
                 max_attachments=settings.max_render_attachments,
-                debug_footer=debug_footer,
+                guard_verdict=debug_verdict,
             )
     except Exception:
         logger.exception(f"Failed to process query in chat {message.chat.id}")

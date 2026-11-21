@@ -11,7 +11,11 @@ from aiogram.utils.chat_action import ChatActionSender
 from loguru import logger
 
 from typst_gost_bot.config import Settings
-from typst_gost_bot.rag.guard import FIX_OFF_TOPIC_REPLY, TopicGuard
+from typst_gost_bot.rag.guard import (
+    FIX_OFF_TOPIC_REPLY,
+    TopicGuard,
+    format_guard_rag_debug,
+)
 from typst_gost_bot.rag.service import RagService
 from typst_gost_bot.telegram.formatters import to_rich_messages
 from typst_gost_bot.telegram.keyboards import build_fix_keyboard
@@ -401,12 +405,10 @@ async def handle_fix_callback(
         return
 
     verdict = await topic_guard.check_code_fix(payload.source_code, payload.error_text)
-    debug_footer = verdict.format_debug_blockquote() if settings.guard_debug else None
-
     if not verdict.allowed:
-        refusal_md = (
-            f"{FIX_OFF_TOPIC_REPLY}\n\n{debug_footer}" if debug_footer else FIX_OFF_TOPIC_REPLY
-        )
+        refusal_md = FIX_OFF_TOPIC_REPLY
+        if settings.guard_debug:
+            refusal_md = f"{refusal_md}\n\n{format_guard_rag_debug(verdict, is_fix=True)}"
         await send_rich_markdown(
             target_message,
             refusal_md,
@@ -422,12 +424,13 @@ async def handle_fix_callback(
             chat_id=target_message.chat.id,
             message_thread_id=thread_id,
         ):
-            fixed_code = await rag_service.fix_code(
+            fixed_code, stats = await rag_service.fix_code_with_stats(
                 payload.source_code,
                 payload.error_text,
             )
             fixed_markdown = f"```typst\n{fixed_code}\n```"
-            if debug_footer:
+            if settings.guard_debug:
+                debug_footer = format_guard_rag_debug(verdict, stats, is_fix=True)
                 fixed_markdown = f"{fixed_markdown}\n\n{debug_footer}"
             await send_rich_markdown(
                 target_message,

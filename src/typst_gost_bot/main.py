@@ -27,6 +27,8 @@ async def start_bot() -> None:
     retriever = DocsRetriever(
         db_path=settings.db_path,
         docs_base_url=settings.docs_base_url,
+        min_score=settings.rag_min_score,
+        rel_ratio=settings.rag_rel_ratio,
     )
     rag_service = RagService(settings=settings, retriever=retriever)
     topic_guard = TopicGuard(settings=settings)
@@ -61,7 +63,9 @@ async def start_bot() -> None:
     logger.info(
         f"Starting bot @{me.username} "
         f"(db: {settings.db_path}, assets: {settings.assets_dir}, "
-        f"guard: {settings.guard_enabled} [{settings.guard_model}], debug: {settings.guard_debug})"
+        f"guard: {settings.guard_enabled} [{settings.guard_model}], "
+        f"rag: min={settings.rag_min_score}, rel={settings.rag_rel_ratio}, "
+        f"debug={settings.guard_debug})"
     )
 
     try:

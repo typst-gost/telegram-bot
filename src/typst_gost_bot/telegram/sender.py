@@ -20,9 +20,11 @@ from aiogram.types import (
 from loguru import logger
 
 from typst_gost_bot.config import Settings
-from typst_gost_bot.rag.models import DocSource, RagAnswer
+from typst_gost_bot.rag.guard import GuardVerdict, format_guard_rag_debug
+from typst_gost_bot.rag.models import DocSource, RagAnswer, RetrievalStats
 from typst_gost_bot.rag.service import RagService
 from typst_gost_bot.telegram.formatters import (
+    filter_and_renumber_sources,
     inject_source_links,
     to_fallback_entities,
     to_rich_messages,
@@ -310,12 +312,24 @@ async def send_rag_reply(
     *,
     compiler: TypstCompiler,
     max_attachments: int,
-    debug_footer: str | None = None,
+    guard_verdict: GuardVerdict | None = None,
 ) -> SentMessageResult:
-    linked_markdown = inject_source_links(rag_answer.answer, rag_answer.sources)
-    if debug_footer:
+    clean_answer, used_sources = filter_and_renumber_sources(
+        rag_answer.answer,
+        rag_answer.sources,
+    )
+    linked_markdown = inject_source_links(clean_answer, used_sources)
+
+    if guard_verdict is not None:
+        stats = (
+            rag_answer.stats.with_cited(len(used_sources))
+            if rag_answer.stats is not None
+            else None
+        )
+        debug_footer = format_guard_rag_debug(guard_verdict, stats)
         linked_markdown = f"{linked_markdown}\n\n{debug_footer}"
-    keyboard = build_sources_keyboard(rag_answer.sources)
+
+    keyboard = build_sources_keyboard(used_sources)
     return await send_rich_markdown(
         message,
         linked_markdown,
@@ -377,7 +391,7 @@ async def stream_rag_reply(
     compiler: TypstCompiler,
     settings: Settings,
     draft_stop_registry: DraftStopRegistry,
-    debug_footer: str | None = None,
+    guard_verdict: GuardVerdict | None = None,
 ) -> RagAnswer | None:
     chat_id = message.chat.id
     thread_id = message.message_thread_id if message.is_topic_message else None
@@ -392,6 +406,7 @@ async def stream_rag_reply(
     )
 
     sources: list[DocSource] = []
+    stats: RetrievalStats | None = None
     accumulated_parts: list[str] = []
     last_push_time = time.monotonic()
     last_pushed_len = 0
@@ -405,6 +420,7 @@ async def stream_rag_reply(
 
             if event.kind == "sources":
                 sources = event.sources
+                stats = event.stats
                 if sources and drafts_enabled:
                     drafts_enabled = await _push_rich_draft(
                         message.bot,
@@ -447,6 +463,8 @@ async def stream_rag_reply(
                     break
 
             elif event.kind == "done":
+                if event.stats is not None:
+                    stats = event.stats
                 if not accumulated_parts and event.text:
                     accumulated_parts.append(event.text)
 
@@ -454,11 +472,9 @@ async def stream_rag_reply(
 
         if stopped_by_user:
             if not raw_answer:
-                stopped_md = (
-                    f"Генерация остановлена.\n\n{debug_footer}"
-                    if debug_footer
-                    else "Генерация остановлена."
-                )
+                stopped_md = "Генерация остановлена."
+                if guard_verdict is not None:
+                    stopped_md = f"{stopped_md}\n\n{format_guard_rag_debug(guard_verdict, stats)}"
                 await send_rich_markdown(
                     message,
                     stopped_md,
@@ -467,21 +483,23 @@ async def stream_rag_reply(
                 )
                 return None
 
-            final_text = f"{close_open_fences(raw_answer)}\n\n> *Генерация остановлена.*"
-            rag_answer = RagAnswer(answer=final_text, sources=sources)
+            closed_raw = close_open_fences(raw_answer)
+            clean_answer, used_sources = filter_and_renumber_sources(closed_raw, sources)
+            final_text = f"{clean_answer}\n\n> *Генерация остановлена.*"
+            rag_answer = RagAnswer(answer=final_text, sources=used_sources, stats=stats)
             await send_rag_reply(
                 message,
                 rag_answer,
                 compiler=compiler,
                 max_attachments=settings.max_render_attachments,
-                debug_footer=debug_footer,
+                guard_verdict=guard_verdict,
             )
-            return RagAnswer(answer=close_open_fences(raw_answer), sources=sources)
+            return RagAnswer(answer=clean_answer, sources=used_sources, stats=stats)
 
         if not raw_answer:
             raw_answer = "Не удалось сформировать ответ по найденной документации."
 
-        if drafts_enabled:
+        if drafts_enabled and sources:
             thinking = "Рендерю примеры кода..." if find_typst_fences(raw_answer) else None
             await _push_rich_draft(
                 message.bot,
@@ -496,13 +514,14 @@ async def stream_rag_reply(
                 can_stop=False,
             )
 
-        rag_answer = RagAnswer(answer=raw_answer, sources=sources)
+        clean_answer, used_sources = filter_and_renumber_sources(raw_answer, sources)
+        rag_answer = RagAnswer(answer=clean_answer, sources=used_sources, stats=stats)
         await send_rag_reply(
             message,
             rag_answer,
             compiler=compiler,
             max_attachments=settings.max_render_attachments,
-            debug_footer=debug_footer,
+            guard_verdict=guard_verdict,
         )
         return rag_answer
     finally:

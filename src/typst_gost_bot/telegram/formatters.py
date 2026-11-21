@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 
 from aiogram.types import (
     BufferedInputFile,
@@ -16,6 +17,48 @@ from typst_gost_bot.rag.models import DocSource
 
 CODE_SEGMENT_RE = re.compile(r"(```[\s\S]*?```|`[^`\n]+`)")
 CITATION_GROUP_RE = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\](?!\()")
+
+
+def filter_and_renumber_sources(
+    markdown_text: str,
+    sources: list[DocSource],
+) -> tuple[str, list[DocSource]]:
+    if not sources or not markdown_text.strip():
+        return markdown_text, []
+
+    source_by_label = {src.label: src for src in sources}
+    new_label_by_old: dict[int, int] = {}
+
+    segments = CODE_SEGMENT_RE.split(markdown_text)
+
+    # 1. Собираем фактически процитированные номера в порядке первого появления в тексте
+    for idx in range(0, len(segments), 2):
+        for match in CITATION_GROUP_RE.finditer(segments[idx]):
+            for part in match.group(1).split(","):
+                num = int(part.strip())
+                if num in source_by_label and num not in new_label_by_old:
+                    new_label_by_old[num] = len(new_label_by_old) + 1
+
+    if not new_label_by_old:
+        return markdown_text, []
+
+    # 2. Перенумеровываем ссылки в прозе (код внутри ```...``` и `...` не трогаем)
+    def _remap(match: re.Match[str]) -> str:
+        raw_nums = [int(part.strip()) for part in match.group(1).split(",")]
+        remapped: list[str] = []
+        for num in raw_nums:
+            new_num = new_label_by_old.get(num)
+            remapped.append(f"[{new_num if new_num is not None else num}]")
+        return ", ".join(remapped) if len(remapped) > 1 else remapped[0]
+
+    for idx in range(0, len(segments), 2):
+        segments[idx] = CITATION_GROUP_RE.sub(_remap, segments[idx])
+
+    used_sources = [
+        replace(source_by_label[old_label], label=new_label)
+        for old_label, new_label in new_label_by_old.items()
+    ]
+    return "".join(segments), used_sources
 
 
 def _replace_citations_in_prose(

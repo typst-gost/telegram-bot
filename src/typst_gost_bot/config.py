@@ -31,6 +31,8 @@ class Settings:
     guard_noul_threshold: float
     guard_timeout_seconds: float
     guard_debug: bool
+    rag_min_score: float
+    rag_rel_ratio: float
     db_path: Path
     docs_base_url: str
     assets_dir: Path
@@ -77,6 +79,8 @@ def load_settings() -> Settings:
         guard_noul_threshold=float(os.getenv("RAG_GUARD_NOUL_THRESHOLD", "0.80")),
         guard_timeout_seconds=float(os.getenv("RAG_GUARD_TIMEOUT", "3.0")),
         guard_debug=_parse_bool(os.getenv("RAG_GUARD_DEBUG"), default=False),
+        rag_min_score=float(os.getenv("RAG_MIN_SCORE", "0.40")),
+        rag_rel_ratio=float(os.getenv("RAG_REL_RATIO", "0.72")),
         db_path=Path(os.getenv("DOCS_DB_PATH", "docs_vector_db")),
         docs_base_url=os.getenv("DOCS_BASE_URL", "https://typst-gost.ru").rstrip("/"),
         assets_dir=Path(os.getenv("COMPILE_ASSETS_DIR", "compile_assets")),
