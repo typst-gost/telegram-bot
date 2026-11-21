@@ -1,0 +1,13 @@
+.git/
+.github/
+.venv/
+.env
+.ruff_cache/
+__pycache__/
+*.pyc
+docs_vector_db/
+.docs_vector_db.*/
+compile_assets/
+.compile_assets.*/
+.typst_cache/
+logs/

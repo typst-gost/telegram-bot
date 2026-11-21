@@ -1,0 +1,28 @@
+services:
+  bot:
+    image: ghcr.io/typst-gost/typst-gost-bot:latest
+    container_name: typst-gost-bot
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    environment:
+      DOCS_DB_PATH: /app/data/docs_vector_db
+      COMPILE_ASSETS_DIR: /app/data/compile_assets
+      TYPST_CACHE_DIR: /app/data/typst_cache
+      TYPST_FONT_PATH: /app/fonts
+    volumes:
+      - bot_data:/app/data
+      - ./fonts:/app/fonts:ro
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  bot_data:
