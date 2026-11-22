@@ -44,5 +44,5 @@ def setup_logging(level: str = "INFO", log_file: str = "") -> None:
         )
 
     logging.basicConfig(handlers=[_InterceptHandler()], level=0, force=True)
-    for name in ("aiogram", "httpx", "openai"):
+    for name in ("aiogram", "httpx"):
         logging.getLogger(name).setLevel(logging.INFO)

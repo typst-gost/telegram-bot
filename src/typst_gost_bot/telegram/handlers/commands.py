@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from aiogram import F, Router
 from aiogram.enums import ChatType
 from aiogram.filters import Command, CommandObject, CommandStart
@@ -14,13 +16,12 @@ from aiogram.utils.chat_action import ChatActionSender
 from loguru import logger
 
 from typst_gost_bot.config import Settings
-from typst_gost_bot.rag.guard import (
-    OFF_TOPIC_REPLY,
-    TopicGuard,
-    format_guard_rag_debug,
+from typst_gost_bot.gateway.client import (
+    GatewayClient,
+    GatewayDisabledError,
+    GatewayRateLimitError,
+    GatewayUnavailableError,
 )
-from typst_gost_bot.rag.service import RagService
-from typst_gost_bot.telegram.history import ChatHistoryStore
 from typst_gost_bot.telegram.rate_limit import CooldownLimiter
 from typst_gost_bot.telegram.render_state import DraftStopRegistry
 from typst_gost_bot.telegram.sender import (
@@ -28,6 +29,7 @@ from typst_gost_bot.telegram.sender import (
     send_rich_markdown,
     stream_rag_reply,
 )
+from typst_gost_bot.typst_runner.assets import list_compile_assets
 from typst_gost_bot.typst_runner.compiler import TypstCompiler
 from typst_gost_bot.typst_runner.extractor import no_typst_blocks
 
@@ -58,15 +60,59 @@ HELP_USAGE_MD = """Укажите вопрос после команды `/help`
 - `/help как экспортировать документ в word docx`"""
 
 
+def _build_user_metadata(message: Message) -> dict[str, Any]:
+    meta: dict[str, Any] = {}
+    if message.from_user:
+        if message.from_user.username:
+            meta["username"] = message.from_user.username
+        if message.from_user.full_name:
+            meta["full_name"] = message.from_user.full_name
+    if message.chat.title:
+        meta["chat_title"] = message.chat.title
+    return meta
+
+
+async def _handle_gateway_exception(message: Message, exc: Exception) -> None:
+    if isinstance(exc, GatewayRateLimitError):
+        await send_rich_markdown(
+            message,
+            "Слишком много запросов. Подождите немного перед следующим вопросом.",
+            render_mode="off",
+            reply_to_sender=True,
+        )
+        return
+    if isinstance(exc, GatewayDisabledError):
+        await send_rich_markdown(
+            message,
+            "Этот режим ассистента временно отключён.",
+            render_mode="off",
+            reply_to_sender=True,
+        )
+        return
+    if isinstance(exc, GatewayUnavailableError):
+        await send_rich_markdown(
+            message,
+            "База знаний сейчас обновляется. Попробуйте повторить запрос чуть позже.",
+            render_mode="off",
+            reply_to_sender=True,
+        )
+        return
+    logger.exception(f"Gateway request failed in chat {message.chat.id}")
+    await send_rich_markdown(
+        message,
+        "Не удалось обработать запрос. Попробуйте повторить позже.",
+        render_mode="off",
+        reply_to_sender=True,
+    )
+
+
 async def _execute_rag_flow(
     message: Message,
     query: str,
-    rag_service: RagService,
-    topic_guard: TopicGuard,
+    gateway_client: GatewayClient,
     compiler: TypstCompiler,
     settings: Settings,
     rate_limiter: CooldownLimiter,
-    history_store: ChatHistoryStore,
     draft_stop_registry: DraftStopRegistry,
 ) -> None:
     if len(query) > MAX_QUERY_CHARS:
@@ -90,46 +136,26 @@ async def _execute_rag_flow(
         return
 
     is_private = message.chat.type == ChatType.PRIVATE
-    history = history_store.get_messages(message.chat.id) if is_private else None
-
-    verdict = await topic_guard.check(query, history=history)
-    debug_verdict = verdict if settings.guard_debug else None
-
-    if not verdict.allowed:
-        refusal_md = OFF_TOPIC_REPLY
-        if debug_verdict is not None:
-            refusal_md = f"{refusal_md}\n\n{format_guard_rag_debug(debug_verdict)}"
-        await send_rich_markdown(
-            message,
-            refusal_md,
-            render_mode="off",
-            reply_to_sender=True,
-        )
-        return
+    ext_user_id = str(user_id)
+    ext_chat_id = str(message.chat.id)
+    metadata = _build_user_metadata(message)
 
     if is_private:
         try:
-            rag_answer = await stream_rag_reply(
+            await stream_rag_reply(
                 message,
                 query,
-                history=history,
-                rag_service=rag_service,
+                conversation_id=f"tg_private:{message.chat.id}",
+                external_user_id=ext_user_id,
+                external_chat_id=ext_chat_id,
+                metadata=metadata,
+                gateway_client=gateway_client,
                 compiler=compiler,
                 settings=settings,
                 draft_stop_registry=draft_stop_registry,
-                guard_verdict=debug_verdict,
             )
-            if rag_answer is not None and rag_answer.answer:
-                history_store.add_user_message(message.chat.id, query)
-                history_store.add_assistant_message(message.chat.id, rag_answer.answer)
-        except Exception:
-            logger.exception(f"Failed to stream query in chat {message.chat.id}")
-            await send_rich_markdown(
-                message,
-                "Не удалось обработать запрос. Попробуйте повторить позже.",
-                render_mode="off",
-                reply_to_sender=True,
-            )
+        except Exception as exc:
+            await _handle_gateway_exception(message, exc)
         return
 
     status_message = await message.answer(
@@ -147,22 +173,23 @@ async def _execute_rag_flow(
             chat_id=message.chat.id,
             message_thread_id=thread_id,
         ):
-            rag_answer = await rag_service.answer(query)
+            rag_answer = await gateway_client.chat(
+                channel="telegram_group",
+                query=query,
+                conversation_id=f"tg_group:{message.chat.id}:{message.message_id}",
+                available_assets=list_compile_assets(settings.assets_dir),
+                external_user_id=ext_user_id,
+                external_chat_id=ext_chat_id,
+                metadata=metadata,
+            )
             await send_rag_reply(
                 message,
                 rag_answer,
                 compiler=compiler,
                 max_attachments=settings.max_render_attachments,
-                guard_verdict=debug_verdict,
             )
-    except Exception:
-        logger.exception(f"Failed to process query in chat {message.chat.id}")
-        await send_rich_markdown(
-            message,
-            "Не удалось обработать запрос. Попробуйте повторить позже.",
-            render_mode="off",
-            reply_to_sender=True,
-        )
+    except Exception as exc:
+        await _handle_gateway_exception(message, exc)
     finally:
         try:
             await status_message.delete()
@@ -182,9 +209,11 @@ async def handle_stopped_generation(
 async def handle_start(
     message: Message,
     settings: Settings,
-    history_store: ChatHistoryStore,
+    gateway_client: GatewayClient,
 ) -> None:
-    history_store.clear(message.chat.id)
+    if message.chat.type == ChatType.PRIVATE:
+        await gateway_client.clear_conversation(f"tg_private:{message.chat.id}")
+
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -208,12 +237,10 @@ async def handle_start(
 async def handle_help(
     message: Message,
     command: CommandObject,
-    rag_service: RagService,
-    topic_guard: TopicGuard,
+    gateway_client: GatewayClient,
     compiler: TypstCompiler,
     settings: Settings,
     rate_limiter: CooldownLimiter,
-    history_store: ChatHistoryStore,
     draft_stop_registry: DraftStopRegistry,
 ) -> None:
     query = (command.args or "").strip()
@@ -229,12 +256,10 @@ async def handle_help(
     await _execute_rag_flow(
         message=message,
         query=query,
-        rag_service=rag_service,
-        topic_guard=topic_guard,
+        gateway_client=gateway_client,
         compiler=compiler,
         settings=settings,
         rate_limiter=rate_limiter,
-        history_store=history_store,
         draft_stop_registry=draft_stop_registry,
     )
 
@@ -247,12 +272,10 @@ async def handle_help(
 )
 async def handle_direct_pm_message(
     message: Message,
-    rag_service: RagService,
-    topic_guard: TopicGuard,
+    gateway_client: GatewayClient,
     compiler: TypstCompiler,
     settings: Settings,
     rate_limiter: CooldownLimiter,
-    history_store: ChatHistoryStore,
     draft_stop_registry: DraftStopRegistry,
 ) -> None:
     query = (message.text or "").strip()
@@ -262,11 +285,9 @@ async def handle_direct_pm_message(
     await _execute_rag_flow(
         message=message,
         query=query,
-        rag_service=rag_service,
-        topic_guard=topic_guard,
+        gateway_client=gateway_client,
         compiler=compiler,
         settings=settings,
         rate_limiter=rate_limiter,
-        history_store=history_store,
         draft_stop_registry=draft_stop_registry,
     )

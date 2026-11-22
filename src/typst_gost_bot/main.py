@@ -3,15 +3,14 @@ from __future__ import annotations
 import asyncio
 
 from aiogram import Bot, Dispatcher
-from aiogram.types import BotCommand
 from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.types import BotCommand
 from loguru import logger
 
 from typst_gost_bot.config import load_settings
+from typst_gost_bot.gateway import GatewayClient
 from typst_gost_bot.logging_setup import setup_logging
-from typst_gost_bot.rag import DocsRetriever, RagService, TopicGuard
 from typst_gost_bot.telegram.handlers import root_router
-from typst_gost_bot.telegram.history import ChatHistoryStore
 from typst_gost_bot.telegram.rate_limit import CooldownLimiter
 from typst_gost_bot.telegram.render_state import (
     DraftStopRegistry,
@@ -25,32 +24,22 @@ async def start_bot() -> None:
     settings = load_settings()
     setup_logging(level=settings.log_level, log_file=settings.log_file)
 
-    retriever = DocsRetriever(
-        db_path=settings.db_path,
-        docs_base_url=settings.docs_base_url,
-        min_score=settings.rag_min_score,
-        rel_ratio=settings.rag_rel_ratio,
-    )
-    rag_service = RagService(settings=settings, retriever=retriever)
-    topic_guard = TopicGuard(settings=settings)
+    gateway_client = GatewayClient(settings=settings)
     compiler = TypstCompiler(settings=settings)
     rate_limiter = CooldownLimiter(settings.rate_limit_seconds)
     fix_store = FixSessionStore()
     edit_tracker = EditTracker()
-    history_store = ChatHistoryStore()
     draft_stop_registry = DraftStopRegistry()
 
     session = AiohttpSession(proxy=settings.telegram_proxy) if settings.telegram_proxy else None
     bot = Bot(token=settings.bot_token, session=session)
     dp = Dispatcher()
     dp["settings"] = settings
-    dp["rag_service"] = rag_service
-    dp["topic_guard"] = topic_guard
+    dp["gateway_client"] = gateway_client
     dp["compiler"] = compiler
     dp["rate_limiter"] = rate_limiter
     dp["fix_store"] = fix_store
     dp["edit_tracker"] = edit_tracker
-    dp["history_store"] = history_store
     dp["draft_stop_registry"] = draft_stop_registry
     dp.include_router(root_router)
 
@@ -64,10 +53,7 @@ async def start_bot() -> None:
     me = await bot.get_me()
     logger.info(
         f"Starting bot @{me.username} "
-        f"(db: {settings.db_path}, assets: {settings.assets_dir}, "
-        f"guard: {settings.guard_enabled} [{settings.guard_model}], "
-        f"rag: min={settings.rag_min_score}, rel={settings.rag_rel_ratio}, "
-        f"debug={settings.guard_debug})"
+        f"(gateway: {settings.ai_gateway_url}, assets: {settings.assets_dir})"
     )
 
     try:
@@ -76,8 +62,7 @@ async def start_bot() -> None:
             allowed_updates=dp.resolve_used_update_types(),
         )
     finally:
-        await topic_guard.close()
-        await rag_service.close()
+        await gateway_client.close()
         await bot.session.close()
 
 

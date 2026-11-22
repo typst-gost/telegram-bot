@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 from dataclasses import dataclass
+from typing import Any
 
 from aiogram import F, Router
 from aiogram.enums import ChatAction
@@ -11,12 +12,12 @@ from aiogram.utils.chat_action import ChatActionSender
 from loguru import logger
 
 from typst_gost_bot.config import Settings
-from typst_gost_bot.rag.guard import (
-    FIX_OFF_TOPIC_REPLY,
-    TopicGuard,
-    format_guard_rag_debug,
+from typst_gost_bot.gateway.client import (
+    GatewayClient,
+    GatewayDisabledError,
+    GatewayRateLimitError,
+    GatewayUnavailableError,
 )
-from typst_gost_bot.rag.service import RagService
 from typst_gost_bot.telegram.formatters import to_rich_messages
 from typst_gost_bot.telegram.keyboards import build_fix_keyboard
 from typst_gost_bot.telegram.rate_limit import CooldownLimiter
@@ -29,6 +30,7 @@ from typst_gost_bot.telegram.sender import (
     send_rich_chunks,
     send_rich_markdown,
 )
+from typst_gost_bot.typst_runner.assets import list_compile_assets
 from typst_gost_bot.typst_runner.compiler import TypstCompiler
 from typst_gost_bot.typst_runner.extractor import (
     extract_typst_blocks_from_message,
@@ -367,8 +369,7 @@ async def handle_edited_typst_message(
 @router.callback_query(F.data.startswith("fix:"))
 async def handle_fix_callback(
     callback: CallbackQuery,
-    rag_service: RagService,
-    topic_guard: TopicGuard,
+    gateway_client: GatewayClient,
     compiler: TypstCompiler,
     settings: Settings,
     fix_store: FixSessionStore,
@@ -404,18 +405,13 @@ async def handle_fix_callback(
     if target_message is None:
         return
 
-    verdict = await topic_guard.check_code_fix(payload.source_code, payload.error_text)
-    if not verdict.allowed:
-        refusal_md = FIX_OFF_TOPIC_REPLY
-        if settings.guard_debug:
-            refusal_md = f"{refusal_md}\n\n{format_guard_rag_debug(verdict, is_fix=True)}"
-        await send_rich_markdown(
-            target_message,
-            refusal_md,
-            render_mode="off",
-            reply_to_sender=True,
-        )
-        return
+    metadata: dict[str, Any] = {}
+    if callback.from_user.username:
+        metadata["username"] = callback.from_user.username
+    if callback.from_user.full_name:
+        metadata["full_name"] = callback.from_user.full_name
+    if target_message.chat.title:
+        metadata["chat_title"] = target_message.chat.title
 
     thread_id = target_message.message_thread_id if target_message.is_topic_message else None
     try:
@@ -424,14 +420,34 @@ async def handle_fix_callback(
             chat_id=target_message.chat.id,
             message_thread_id=thread_id,
         ):
-            fixed_code, stats = await rag_service.fix_code_with_stats(
-                payload.source_code,
-                payload.error_text,
+            fix_result = await gateway_client.fix_code(
+                source_code=payload.source_code,
+                error_text=payload.error_text,
+                conversation_id=f"tg_fix:{target_message.chat.id}:{target_message.message_id}",
+                available_assets=list_compile_assets(settings.assets_dir),
+                external_user_id=str(callback.from_user.id),
+                external_chat_id=str(target_message.chat.id),
+                metadata=metadata,
             )
-            fixed_markdown = f"```typst\n{fixed_code}\n```"
-            if settings.guard_debug:
-                debug_footer = format_guard_rag_debug(verdict, stats, is_fix=True)
-                fixed_markdown = f"{fixed_markdown}\n\n{debug_footer}"
+
+            if fix_result.blocked_by_guard:
+                refusal_md = fix_result.refusal_message or (
+                    "> **Примечание:** кнопка «Исправить» работает только для кода Typst."
+                )
+                if fix_result.debug_markdown:
+                    refusal_md = f"{refusal_md}\n\n{fix_result.debug_markdown}"
+                await send_rich_markdown(
+                    target_message,
+                    refusal_md,
+                    render_mode="off",
+                    reply_to_sender=True,
+                )
+                return
+
+            fixed_markdown = f"```typst\n{fix_result.fixed_code}\n```"
+            if fix_result.debug_markdown:
+                fixed_markdown = f"{fixed_markdown}\n\n{fix_result.debug_markdown}"
+
             await send_rich_markdown(
                 target_message,
                 fixed_markdown,
@@ -440,8 +456,29 @@ async def handle_fix_callback(
                 max_attachments=settings.max_render_attachments,
                 reply_to_sender=True,
             )
+    except GatewayRateLimitError:
+        await send_rich_markdown(
+            target_message,
+            "> **Примечание:** слишком много запросов к AI-сервису. Попробуйте чуть позже.",
+            render_mode="off",
+            reply_to_sender=True,
+        )
+    except GatewayDisabledError:
+        await send_rich_markdown(
+            target_message,
+            "> **Примечание:** автоисправление кода временно отключено.",
+            render_mode="off",
+            reply_to_sender=True,
+        )
+    except GatewayUnavailableError:
+        await send_rich_markdown(
+            target_message,
+            "> **Примечание:** база знаний обновляется. Попробуйте позже.",
+            render_mode="off",
+            reply_to_sender=True,
+        )
     except Exception:
-        logger.exception("Failed to fix Typst code via RAG LLM")
+        logger.exception("Failed to fix Typst code via AI Gateway")
         await send_rich_markdown(
             target_message,
             "> **Примечание:** не удалось исправить код. Попробуйте позже.",

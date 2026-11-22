@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from typst_gost_bot.rag.models import DocSource
+from typst_gost_bot.gateway.models import DocSource
 
 
 def _truncate_label(text: str, limit: int = 44) -> str:

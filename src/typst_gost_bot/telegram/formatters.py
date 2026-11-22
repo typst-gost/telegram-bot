@@ -13,7 +13,7 @@ from aiogram.types import (
 from loguru import logger
 from telegramify_markdown import convert, split_entities, telegramify_rich
 
-from typst_gost_bot.rag.models import DocSource
+from typst_gost_bot.gateway.models import DocSource
 
 CODE_SEGMENT_RE = re.compile(r"(```[\s\S]*?```|`[^`\n]+`)")
 CITATION_GROUP_RE = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\](?!\()")
@@ -31,7 +31,6 @@ def filter_and_renumber_sources(
 
     segments = CODE_SEGMENT_RE.split(markdown_text)
 
-    # 1. Собираем фактически процитированные номера в порядке первого появления в тексте
     for idx in range(0, len(segments), 2):
         for match in CITATION_GROUP_RE.finditer(segments[idx]):
             for part in match.group(1).split(","):
@@ -42,7 +41,6 @@ def filter_and_renumber_sources(
     if not new_label_by_old:
         return markdown_text, []
 
-    # 2. Перенумеровываем ссылки в прозе (код внутри ```...``` и `...` не трогаем)
     def _remap(match: re.Match[str]) -> str:
         raw_nums = [int(part.strip()) for part in match.group(1).split(",")]
         remapped: list[str] = []

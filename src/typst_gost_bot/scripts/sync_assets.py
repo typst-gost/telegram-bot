@@ -68,17 +68,15 @@ def _atomic_swap(staging_dir: Path, target_dir: Path) -> None:
             shutil.rmtree(backup_dir, ignore_errors=True)
 
 
-def sync_website_resources(
+def sync_compile_assets(
     repo_slug: str,
     branch: str,
     *,
-    db_subdir: str | None,
-    db_target: Path | None,
-    assets_subdir: str | None,
-    assets_target: Path | None,
+    assets_subdir: str,
+    assets_target: Path,
 ) -> None:
     archive_url = f"https://codeload.github.com/{repo_slug}/tar.gz/refs/heads/{branch}"
-    logger.info(f"Downloading repository archive {repo_slug}@{branch}")
+    logger.info(f"Downloading compile assets from {repo_slug}@{branch}")
 
     with tempfile.TemporaryDirectory(prefix="typst_gost_sync_") as tmp_root:
         tmp_path = Path(tmp_root)
@@ -93,43 +91,26 @@ def sync_website_resources(
                 shutil.copyfileobj(response, out_file)
 
         with tarfile.open(archive_path, "r:gz") as tar:
-            if db_subdir and db_target is not None:
-                db_target = db_target.resolve()
-                db_target.parent.mkdir(parents=True, exist_ok=True)
-                staging_db = Path(tempfile.mkdtemp(dir=db_target.parent, prefix=f".{db_target.name}."))
-                try:
-                    _extract_subdir(tar, db_subdir, staging_db)
-                    if not (staging_db / "docs.lance").exists():
-                        raise RuntimeError(
-                            f"Directory '{db_subdir}' does not contain docs.lance"
-                        )
-                    _atomic_swap(staging_db, db_target)
-                    logger.info(f"Vector database synced to {db_target}")
-                except Exception:
-                    shutil.rmtree(staging_db, ignore_errors=True)
-                    raise
-
-            if assets_subdir and assets_target is not None:
-                assets_target = assets_target.resolve()
-                assets_target.parent.mkdir(parents=True, exist_ok=True)
-                staging_assets = Path(
-                    tempfile.mkdtemp(dir=assets_target.parent, prefix=f".{assets_target.name}.")
+            assets_target = assets_target.resolve()
+            assets_target.parent.mkdir(parents=True, exist_ok=True)
+            staging_assets = Path(
+                tempfile.mkdtemp(dir=assets_target.parent, prefix=f".{assets_target.name}.")
+            )
+            try:
+                extracted_files = _extract_subdir(tar, assets_subdir, staging_assets)
+                _atomic_swap(staging_assets, assets_target)
+                logger.info(
+                    f"Compile assets synced to {assets_target} ({extracted_files} files)"
                 )
-                try:
-                    extracted_files = _extract_subdir(tar, assets_subdir, staging_assets)
-                    _atomic_swap(staging_assets, assets_target)
-                    logger.info(
-                        f"Compile assets synced to {assets_target} ({extracted_files} files)"
-                    )
-                except Exception:
-                    shutil.rmtree(staging_assets, ignore_errors=True)
-                    raise
+            except Exception:
+                shutil.rmtree(staging_assets, ignore_errors=True)
+                raise
 
 
 def main() -> None:
     load_dotenv()
     parser = argparse.ArgumentParser(
-        description="Download or update docs_vector_db and compile_assets from typst-gost/website",
+        description="Download or update compile_assets from typst-gost/website",
     )
     parser.add_argument(
         "--repo",
@@ -140,15 +121,6 @@ def main() -> None:
         default=os.getenv("DOCS_REPO_BRANCH", "main"),
     )
     parser.add_argument(
-        "--db-subdir",
-        default=os.getenv("DOCS_REPO_SUBDIR", "docs_vector_db"),
-    )
-    parser.add_argument(
-        "--target",
-        type=Path,
-        default=Path(os.getenv("DOCS_DB_PATH", "docs_vector_db")),
-    )
-    parser.add_argument(
         "--assets-subdir",
         default=os.getenv("DOCS_REPO_ASSETS_SUBDIR", "public/docs/compile_assets"),
     )
@@ -157,17 +129,13 @@ def main() -> None:
         type=Path,
         default=Path(os.getenv("COMPILE_ASSETS_DIR", "compile_assets")),
     )
-    parser.add_argument("--db-only", action="store_true")
-    parser.add_argument("--assets-only", action="store_true")
     args = parser.parse_args()
 
-    sync_website_resources(
+    sync_compile_assets(
         args.repo,
         args.branch,
-        db_subdir=None if args.assets_only else args.db_subdir,
-        db_target=None if args.assets_only else args.target,
-        assets_subdir=None if args.db_only else args.assets_subdir,
-        assets_target=None if args.db_only else args.assets_target,
+        assets_subdir=args.assets_subdir,
+        assets_target=args.assets_target,
     )
 
 

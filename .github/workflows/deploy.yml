@@ -6,8 +6,8 @@ on:
       - main
   workflow_dispatch:
     inputs:
-      sync_docs:
-        description: "Принудительно обновить docs_vector_db и compile_assets на VDS"
+      sync_assets:
+        description: "Принудительно обновить compile_assets на VDS"
         required: false
         type: boolean
         default: false
@@ -64,7 +64,6 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          # Если VDS на ARM64, поменяйте на linux/arm64
           platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
@@ -97,7 +96,7 @@ jobs:
           VDS_PORT: ${{ secrets.VDS_PORT || '22' }}
           DEPLOY_DIR: ${{ vars.VDS_DEPLOY_PATH || '/opt/typst-gost-bot' }}
           IMAGE_REF: ${{ needs.build.outputs.image_ref }}
-          SYNC_DOCS: ${{ inputs.sync_docs || false }}
+          SYNC_ASSETS: ${{ inputs.sync_assets || false }}
         run: |
           SSH_OPTS="-i ~/.ssh/deploy_key -p ${VDS_PORT} -o StrictHostKeyChecking=accept-new"
 
@@ -129,13 +128,11 @@ jobs:
             docker compose pull
             docker compose up -d --remove-orphans
 
-            if [ "${SYNC_DOCS}" = "true" ]; then
-              echo "Running sync-docs-db and restarting bot to reload LanceDB table..."
-              docker compose exec -T bot sync-docs-db
-              docker compose restart bot
+            if [ "${SYNC_ASSETS}" = "true" ]; then
+              echo "Running sync-assets..."
+              docker compose exec -T bot sync-assets
             fi
 
-            # Ждём healthy-статуса контейнера
             for i in \$(seq 1 24); do
               status=\$(docker inspect --format '{{.State.Health.Status}}' typst-gost-bot 2>/dev/null || echo "starting")
               echo "Health status (\$i/24): \$status"
